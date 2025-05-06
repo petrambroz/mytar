@@ -6,25 +6,28 @@
 #define BLOCK_SIZE 512
 #define USTAR_MAGIC "ustar"
 
+#define ERROR_MEMORY 1
+#define ERROR_ARGS 2
+#define ZERO_BLOCKS_REQUIRED 2
 
 typedef struct {
-	char name[100];
-	char mode[8];
-	char uid[8];
-	char gid[8];
-	char size[12];
-	char mtime[12];
-	char chksum[8];
-	char typeflag;
-	char linkname[100];
-	char magic[6];
-	char version[2];
-	char uname[32];
-	char gname[32];
-	char devmajor[8];
-	char devminor[8];
-	char prefix[155];
-	char padding[12];
+    char name[100];
+    char mode[8];
+    char uid[8];
+    char gid[8];
+    char size[12];
+    char mtime[12];
+    char chksum[8];
+    char typeflag;
+    char linkname[100];
+    char magic[6];
+    char version[2];
+    char uname[32];
+    char gname[32];
+    char devmajor[8];
+    char devminor[8];
+    char prefix[155];
+    char padding[12];
 } tar_header;
 
 typedef struct {
@@ -40,6 +43,13 @@ typedef struct {
     char *name;
     int found;
 } file_status;
+
+void cleanup_args(arguments *args) {
+    if (args->file_arguments) {
+        free(args->file_arguments);
+        args->file_arguments = NULL;
+    }
+}
 
 arguments parse_arguments(int argc, char *argv[]) {
     arguments args = {NULL, 0, 0, 0, NULL, 0};
@@ -75,25 +85,25 @@ arguments parse_arguments(int argc, char *argv[]) {
                 break;
             case 'f':
                 if (++i >= argc) {
-                    free(args.file_arguments);
-                    errx(2, "option requires an argument -- 'f'");
+                    cleanup_args(&args);
+                    errx(ERROR_ARGS, "option requires an argument -- 'f'");
                 }
                 args.archive_name = argv[i];
                 break;
             default:
-                free(args.file_arguments);
-                errx(2, "Unknown option: -%c", argv[i][1]);
+                cleanup_args(&args);
+                errx(ERROR_ARGS, "Unknown option: -%c", argv[i][1]);
         }
     }
 
     if (!found_operation) {
-        free(args.file_arguments);
-        errx(2, "need at least one option");
+        cleanup_args(&args);
+        errx(ERROR_ARGS, "need at least one option");
     }
 
     if (!args.archive_name && found_operation) {
-        free(args.file_arguments);
-        errx(2, "option requires an argument -- 'f'");
+        cleanup_args(&args);
+        errx(ERROR_ARGS, "option requires an argument -- 'f'");
     }
 
     return args;
@@ -132,13 +142,13 @@ int is_zero_block(const char *block) {
 int validate_header(const tar_header *header) {
     // Verify if it's a valid tar header
     if (strncmp(header->magic, USTAR_MAGIC, 5) != 0) {
-        errx(2, "Invalid magic number in tar header");
+        return 1;
     }
 
     // Only support regular files (type '0' or '\0')
     char type = header->typeflag;
     if (type != '0' && type != '\0') {
-        errx(2, "Unsupported header type: %d", type);
+        errx(2, "Unsupported header type: %d", (int)type);
     }
 
     return 0;
@@ -152,9 +162,13 @@ int read_header(FILE *archive, tar_header *header) {
     return 1;
 }
 
+unsigned long long calculate_blocks(unsigned long long size) {
+    return (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+}
+
 void skip_file_content(FILE *archive, const tar_header *header) {
     unsigned long long size = get_size(header->size);
-    unsigned long long blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    unsigned long long blocks = calculate_blocks(size);
 
     // Try reading block by block to detect truncation
     char buffer[BLOCK_SIZE];
@@ -166,22 +180,80 @@ void skip_file_content(FILE *archive, const tar_header *header) {
     }
 }
 
-void process_file_arguments(const char *filename, file_status *files, int num_files) {
+// Function to check if a file should be processed based on file arguments
+int should_process_file(const char *filename, file_status *files, int num_files) {
+    // If no specific files were requested, process all files
     if (num_files == 0) {
-        printf("%s\n", filename);
-        return;
+        return 1;
     }
 
+    // Otherwise, process only if the file was requested
     for (int i = 0; i < num_files; i++) {
         if (strcmp(filename, files[i].name) == 0) {
-            printf("%s\n", filename);
             files[i].found = 1;
-            return;
+            return 1;
         }
     }
+
+    return 0;
 }
 
-int list(arguments args) {
+// Function to extract file content
+int extract_file(FILE *archive, const tar_header *header, int verbose, file_status *files, int num_files) {
+    const char *filename = header->name;
+    unsigned long long size = get_size(header->size);
+    unsigned long long blocks = calculate_blocks(size);
+
+    // Check if we should process this file
+    if (!should_process_file(filename, files, num_files)) {
+        // Skip this file and return
+        fseek(archive, blocks * BLOCK_SIZE, SEEK_CUR);
+        return 0;
+    }
+
+    // Print filename if verbose
+    if (verbose) {
+        printf("%s\n", filename);
+    }
+
+    // Create and open output file
+    FILE *output = fopen(filename, "wb");
+    if (!output) {
+        warn("Cannot create file %s", filename);
+        // Skip this file's blocks
+        fseek(archive, blocks * BLOCK_SIZE, SEEK_CUR);
+        return 1;
+    }
+
+    // Extract file content
+    char buffer[BLOCK_SIZE];
+    unsigned long long remaining = size;
+
+    for (unsigned long long i = 0; i < blocks; i++) {
+        size_t bytes_read = fread(buffer, 1, BLOCK_SIZE, archive);
+
+        if (bytes_read != BLOCK_SIZE) {
+            fclose(output);
+            warnx("Unexpected EOF in archive");
+            errx(2, "Error is not recoverable: exiting now");
+        }
+
+        // Write only the required bytes from the last block
+        size_t bytes_to_write = (remaining > BLOCK_SIZE) ? BLOCK_SIZE : remaining;
+        if (fwrite(buffer, 1, bytes_to_write, output) != bytes_to_write) {
+            fclose(output);
+            warn("Failed to write to file %s", filename);
+            return 1;
+        }
+
+        remaining -= bytes_to_write;
+    }
+
+    fclose(output);
+    return 0;
+}
+
+int process_archive(arguments args, int extract_mode) {
     FILE *archive = fopen(args.archive_name, "rb");
     if (!archive) {
         err(2, "Cannot open archive %s", args.archive_name);
@@ -193,7 +265,7 @@ int list(arguments args) {
         files = malloc(sizeof(file_status) * args.num_file_arguments);
         if (!files) {
             fclose(archive);
-            errx(1, "memory allocation failed");
+            errx(ERROR_MEMORY, "memory allocation failed");
         }
 
         // Initialize file status tracking
@@ -227,14 +299,26 @@ int list(arguments args) {
         }
         zero_blocks = 0;
 
-        // Process this header
-        validate_header(&header);
-        process_file_arguments(header.name, files, args.num_file_arguments);
+        // Process this header - Check return value from validate_header
+        if (validate_header(&header) != 0) {
+            warnx("This does not look like a tar archive");
+            warnx("Exiting with failure status due to previous errors");
+            ret = 2;
+            break;
+        }
 
-        // Skip file content and update block counter
+        if (extract_mode) {
+            // Extract the file
+            extract_file(archive, &header, args.verbose_flag, files, args.num_file_arguments);
+        } else {
+            // List mode
+            if (should_process_file(header.name, files, args.num_file_arguments)) {
+                printf("%s\n", header.name);
+            }
+            // Skip the file content since we're just listing
+            skip_file_content(archive, &header);
+        }
         unsigned long long file_blocks = (get_size(header.size) + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        skip_file_content(archive, &header);
-
         block_num += file_blocks + 1;
     }
 
@@ -272,11 +356,11 @@ int main(int argc, char *argv[]) {
     int ret = 0;
 
     if (args.list_flag) {
-        ret = list(args);
+        ret = process_archive(args, 0);
     } else if (args.extract_flag) {
-        // ret = extract(args);
+        ret = process_archive(args, 1);
     }
 
-    free(args.file_arguments);
+    cleanup_args(&args);
     return ret;
 }
