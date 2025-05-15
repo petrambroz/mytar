@@ -113,7 +113,7 @@ unsigned long long base256_to_ull(const char *size_field) {
     unsigned long long val = 0;
     // Process remaining 11 bytes for 12-byte field
     for (int i = 1; i < 12; i++) {
-        val = (val << 8) | (unsigned char)size_field[i];
+        val = (val << 8) | (unsigned char) size_field[i];
     }
     return val;
 }
@@ -148,7 +148,7 @@ int validate_header(const tar_header *header) {
     // Only support regular files (type '0' or '\0')
     char type = header->typeflag;
     if (type != '0' && type != '\0') {
-        errx(2, "Unsupported header type: %d", (int)type);
+        errx(2, "Unsupported header type: %d", (int) type);
     }
 
     return 0;
@@ -283,7 +283,7 @@ int process_archive(arguments args, int extract_mode) {
     // Read and process each header in the archive
     while (read_header(archive, &header)) {
         // Check for zero block
-        if (is_zero_block((char *)&header)) {
+        if (is_zero_block((char *) &header)) {
             zero_blocks++;
 
             if (zero_blocks == 2) {
@@ -303,7 +303,6 @@ int process_archive(arguments args, int extract_mode) {
         if (validate_header(&header) != 0) {
             warnx("This does not look like a tar archive");
             warnx("Exiting with failure status due to previous errors");
-            ret = 2;
             break;
         }
 
