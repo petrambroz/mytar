@@ -44,6 +44,7 @@ typedef struct {
     int found;
 } file_status;
 
+// Frees memory allocated for file arguments in the arguments struct
 void cleanup_args(arguments *args) {
     if (args->file_arguments) {
         free(args->file_arguments);
@@ -51,6 +52,7 @@ void cleanup_args(arguments *args) {
     }
 }
 
+// Parses command-line arguments and fills the arguments struct
 arguments parse_arguments(int argc, char *argv[]) {
     arguments args = {NULL, 0, 0, 0, NULL, 0};
 
@@ -109,6 +111,7 @@ arguments parse_arguments(int argc, char *argv[]) {
     return args;
 }
 
+// Converts a base-256 encoded size field from a tar header to an unsigned long long
 unsigned long long base256_to_ull(const char *size_field) {
     unsigned long long val = 0;
     // Process remaining 11 bytes for 12-byte field
@@ -118,6 +121,7 @@ unsigned long long base256_to_ull(const char *size_field) {
     return val;
 }
 
+// Returns the size of a file from the tar header
 unsigned long long get_size(const char *size_field) {
     // Check if it's a base-256 number (high bit set)
     if ((size_field[0] & 0x80) != 0) {
@@ -130,6 +134,7 @@ unsigned long long get_size(const char *size_field) {
     return val;
 }
 
+// Checks if a 512-byte block is all zeros
 int is_zero_block(const char *block) {
     for (int i = 0; i < BLOCK_SIZE; i++) {
         if (block[i] != '\0') {
@@ -139,6 +144,7 @@ int is_zero_block(const char *block) {
     return 1;
 }
 
+// Validates a tar header: checks magic and supported file type
 int validate_header(const tar_header *header) {
     // Verify if it's a valid tar header
     if (strncmp(header->magic, USTAR_MAGIC, 5) != 0) {
@@ -154,6 +160,7 @@ int validate_header(const tar_header *header) {
     return 0;
 }
 
+// Reads a tar header block from the archive file
 int read_header(FILE *archive, tar_header *header) {
     size_t bytes_read = fread(header, 1, BLOCK_SIZE, archive);
     if (bytes_read != BLOCK_SIZE) {
@@ -162,10 +169,12 @@ int read_header(FILE *archive, tar_header *header) {
     return 1;
 }
 
+// Calculates the number of 512-byte blocks needed to store a file of given size
 unsigned long long calculate_blocks(unsigned long long size) {
     return (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
 }
 
+// Skips over the content of a file in the archive
 void skip_file_content(FILE *archive, const tar_header *header) {
     unsigned long long size = get_size(header->size);
     unsigned long long blocks = calculate_blocks(size);
@@ -180,7 +189,7 @@ void skip_file_content(FILE *archive, const tar_header *header) {
     }
 }
 
-// Function to check if a file should be processed based on file arguments
+// Determines if a file should be processed based on user-specified file arguments
 int should_process_file(const char *filename, file_status *files, int num_files) {
     // If no specific files were requested, process all files
     if (num_files == 0) {
@@ -198,7 +207,7 @@ int should_process_file(const char *filename, file_status *files, int num_files)
     return 0;
 }
 
-// Function to extract file content
+// Extracts a file from the archive to disk
 int extract_file(FILE *archive, const tar_header *header, int verbose, file_status *files, int num_files) {
     const char *filename = header->name;
     unsigned long long size = get_size(header->size);
@@ -253,6 +262,7 @@ int extract_file(FILE *archive, const tar_header *header, int verbose, file_stat
     return 0;
 }
 
+// Processes the archive: lists or extracts files based on mode and arguments
 int process_archive(arguments args, int extract_mode) {
     FILE *archive = fopen(args.archive_name, "rb");
     if (!archive) {
@@ -350,6 +360,7 @@ int process_archive(arguments args, int extract_mode) {
     return ret;
 }
 
+// Main entry point
 int main(int argc, char *argv[]) {
     arguments args = parse_arguments(argc, argv);
     int ret = 0;
